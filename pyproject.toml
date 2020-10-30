@@ -1,0 +1,13 @@
+[tool.poetry]
+name = "motion-telegram-notifier"
+version = "0.1.0"
+description = ""
+authors = ["Marc Benet <marcbenet@gmail.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.7"
+python-telegram-bot = "^13.0"
+environs = "^8.0.0"
+black = "^20.8b1"
+isort = "^5.6.4"
+
