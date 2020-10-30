@@ -14,7 +14,7 @@ Is also able to decide if the motion capture recording is relevant or not by a c
 ```sh
 cp .env.example .env
 vim .env
-virtualenv venv -p python3
+python3 -m venv venv
 source venv/bin/activate
 pip install poetry
 poetry install
@@ -31,7 +31,7 @@ vim /etc/supervisor/conf.d/motion_notify.conf  # edit it with your routes & user
 sudo supervisorctl reread
 sudo supervisorctl reload
 ```
-From now on the python servive is ready
+From now on the python service is ready
 
 ## Configuring your telegram credentials
 In the .env.example file you will find two config params to set up with your own telegram bot token your telegram chat ID.
