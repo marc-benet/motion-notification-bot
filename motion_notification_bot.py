@@ -1,11 +1,13 @@
 import logging
-import os
-import socket
 import subprocess
+import threading
 import time
 
 import telegram
 from environs import Env
+from moviepy.editor import VideoFileClip
+
+from utils import cleanup_file, get_file_from_log_line, get_local_ip
 
 env = Env()
 env.read_env()
@@ -25,43 +27,16 @@ logging.basicConfig(
 )
 
 last_relevant = False
-irrelevant_counter = 0
-relevant_counter = 0
+event_counter = 0
 last_video_path = ""
 last_pic_path = ""
 time_interval = int(time.time())
 initial_time = int(time.time())
-final_time = int(time.time())
-
-
-def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("8.8.8.8", 80))
-    ip = s.getsockname()[0]
-    s.close()
-
-    return ip
-
-
 feed_ip = get_local_ip()
 
 
-def cleanup_file(path):
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        logging.error(f"NOT FOUND FILE {path}")
-    except PermissionError:
-        logging.error(f"NO PERMISSION TO REMOVE {path}")
-
-    logging.info(f"REMOVED - {path}")
-
-
-def get_file_from_log_line(log_line):
-    return log_line.strip("\n").split(" ")[-1]
-
-
 def telegram_msg(text):
+    logging.info(f"TELEGRAM MSG - {text}")
     bot = telegram.Bot(token=bot_token)
     bot.send_message(chat_id=chat_id, text=f"http://{feed_ip}:{feed_port} - {text}")
 
@@ -71,7 +46,8 @@ def telegram_photo(path):
         bot = telegram.Bot(token=bot_token)
         try:
             bot.send_photo(chat_id, photo=open(path, "rb"))
-            cleanup_file(path)
+            log_level, msg = cleanup_file(path)
+            getattr(logging, log_level)(msg)
         except FileNotFoundError:
             logging.error(f"NOT FOUND FILE {path}")
             bot.send_message(
@@ -80,14 +56,15 @@ def telegram_photo(path):
             )
 
 
-def telegram_video(path, rm_file=True):
+def telegram_video(path, rm_file=False):
     if "mp4" in path:
         bot = telegram.Bot(token=bot_token)
-        bot.send_message(chat_id=chat_id, text=f"Sending recording...")
+        telegram_msg("Sending recording...")
         try:
             bot.send_video(chat_id, video=open(path, "rb"))
             if rm_file:
-                cleanup_file(path)
+                log_level, msg = cleanup_file(path)
+                getattr(logging, log_level)(msg)
         except FileNotFoundError:
             logging.error(f"NOT FOUND FILE {path}")
             bot.send_message(
@@ -96,8 +73,35 @@ def telegram_video(path, rm_file=True):
             )
 
 
+def event_end(last_video_path, last_pic_path):
+    logging.info(f"VIDEO PATH - {last_video_path}")
+
+    try:
+        clip = VideoFileClip(last_video_path)
+        clip_duration = clip.duration
+    except OSError:
+        logging.info("COULDN'T FIND THE RELEVANT MOVIE ANY MORE!")
+        clip_duration = 0
+
+    logging.info(f"CLIP DURATION - {clip_duration}")
+
+    if clip_duration > 12:
+        logging.info("RELEVANT MOVIE FINISHED!")
+        telegram_video(last_video_path)
+    else:
+        log_level, msg = cleanup_file(last_pic_path)
+        getattr(logging, log_level)(msg)
+        log_level, msg = cleanup_file(last_video_path)
+        getattr(logging, log_level)(msg)
+        logging.info("IRRELEVANT MOVIE")
+
+
 if __name__ == "__main__":
-    telegram_msg("SURVEILANCE STARTED")
+    # telegram_msg("SURVEILANCE STARTED")
+    telegram_thread = threading.Thread(
+        target=telegram_msg, kwargs={"text": "-- SURVEILANCE STARTED --"}, daemon=True
+    )
+    telegram_thread.start()
     f = subprocess.Popen(
         ["tail", "-F", filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
@@ -116,35 +120,33 @@ if __name__ == "__main__":
 
             if "Thread exiting" in line:
                 logging.info("MOTION PROCESS SHUTDOWN")
-                telegram_msg("Camera shutting down...")
+                telegram_thread = threading.Thread(
+                    target=telegram_msg,
+                    kwargs={"text": "Camera shutting down..."},
+                    daemon=True,
+                )
+                telegram_thread.start()
+                # telegram_msg("Camera shutting down...")
 
             if "motion_init: Camera 0 started" in line:
                 logging.info("MOTION PROCESS STARTUP")
-                telegram_msg("Camera started")
+                # telegram_msg("Camera started")
+                telegram_thread = threading.Thread(
+                    target=telegram_msg, kwargs={"text": "Camera sarted"}, daemon=True
+                )
+                telegram_thread.start()
 
             if "End of event" in line:
-                final_time = int(time.time())
-                logging.info(f"VIDEO PATH - {last_video_path}")
-                if (final_time - initial_time) > 30:
-                    logging.info("RELEVANT MOVIE FINISHED!")
-                    telegram_photo(last_pic_path)
-                    telegram_video(last_video_path)
-                    relevant_counter += 1
-                    last_relevant = True
-                elif last_relevant:
-                    # if it started relevant we want the final of the video even
-                    # if it was not going to be considered relevant
-                    logging.info("RELEVANT BECAUSE LAST RELEVANT FINISHED!")
-                    telegram_photo(last_pic_path)
-                    telegram_video(last_video_path)
-                    relevant_counter += 1
-                    last_relevant = False
-                else:
-                    irrelevant_counter += 1
-                    cleanup_file(last_pic_path)
-                    cleanup_file(last_video_path)
-                    logging.info("IRRELEVANT MOVIE")
-                    last_relevant = False
+                event_thread = threading.Thread(
+                    target=event_end,
+                    kwargs={
+                        "last_video_path": last_video_path,
+                        "last_pic_path": last_pic_path,
+                    },
+                    daemon=True,
+                )
+                event_thread.start()
+                event_counter += 1
 
             if "File of type 1 saved to:" in line:
                 last_pic_path = get_file_from_log_line(line)
@@ -153,12 +155,16 @@ if __name__ == "__main__":
 
             if (int(time.time()) - time_interval) > report_interval:
                 msg = "---- REPORT ---- \n"
-                msg += f"-> {irrelevant_counter} irrelevant events \n"
-                msg += f"-> {relevant_counter} videos recorded"
-                telegram_msg(msg)
+                msg += f"-> counted {event_counter} events \n"
+                # msg += f"-> {relevant_counter} videos recorded"
+                telegram_thread = threading.Thread(
+                    target=telegram_msg, kwargs={"text": msg}, daemon=True
+                )
+                telegram_thread.start()
+                # telegram_msg(msg)
                 time_interval = int(time.time())
-                irrelevant_counter = 0
-                relevant_counter = 0
+                event_counter = 0
+                # relevant_counter = 0
 
         except telegram.error.TimedOut:
             logging.critical("Telegram TimeOut Error :(")

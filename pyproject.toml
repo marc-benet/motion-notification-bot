@@ -10,4 +10,5 @@ python-telegram-bot = "^13.0"
 environs = "^8.0.0"
 black = "^20.8b1"
 isort = "^5.6.4"
+moviepy = "^1.0.3"
 
